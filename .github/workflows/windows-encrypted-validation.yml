@@ -1,4 +1,4 @@
-name: Windows encrypted validation
+name: Linux encrypted validation
 
 on:
   workflow_dispatch:
@@ -8,8 +8,8 @@ permissions:
 
 jobs:
   validation:
-    runs-on: windows-2025
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - name: Check out reviewed encrypted input
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -21,11 +21,12 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
+      - name: Install evidence encryption dependency
+        run: python -m pip install cryptography==46.0.3
       - name: Execute private controlled validation and encrypt evidence
-        shell: pwsh
         env:
           H4_VALIDATION_KEY: ${{ secrets.H4_VALIDATION_KEY }}
-        run: ./scripts/run-encrypted.ps1
+        run: python scripts/run-encrypted-linux.py
       - name: Retain encrypted evidence only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
