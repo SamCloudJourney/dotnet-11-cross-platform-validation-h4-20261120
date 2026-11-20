@@ -64,7 +64,7 @@ if ($report) {
   $principalDistinct = $report.owner -ne $report.actor
   Write-Host "SDK=$($report.sdk)"
   Write-Host "DistinctPrincipal=$principalDistinct"
-  Write-Host "ControlBaseline=$(-not $report.valid_baseline.marker_exists)"
+  Write-Host "ControlBaseline=$(($report.valid_baseline.owner_exit -eq 0) -and -not $report.valid_baseline.marker_exists)"
   Write-Host "ObservedTerminal=$positive"
   Write-Host "NegativeControl=$negative"
   Write-Host "CausalIntervention=$intervention"
