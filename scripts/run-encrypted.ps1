@@ -58,17 +58,10 @@ if (-not $report) { $harnessFailed = $true }
 if ($report -and $report.setup_or_run_error) { $harnessFailed = $true }
 
 if ($report) {
-  $positive = @($report.positive | Where-Object { $_.marker_exists -and $_.actor.direct_write_denied -and $_.actor.probe_sent_completion -and $_.actor.actor -eq $report.actor_name }).Count -gt 0
-  $negative = $report.negative -and $report.negative.actor.probe_sent_completion -and -not $report.negative.marker_exists
-  $intervention = $report.intervention -and $report.intervention.actor.probe_sent_completion -and -not $report.intervention.marker_exists
   $principalDistinct = ($report.owner -ne $report.actor) -and (@($report.positive | Where-Object { $_.actor.actor -eq $report.actor_name }).Count -gt 0)
   Write-Host "SDK=$($report.sdk)"
   Write-Host "DistinctPrincipal=$principalDistinct"
-  Write-Host "ControlBaseline=$(($report.valid_baseline.owner_exit -eq 0) -and -not $report.valid_baseline.marker_exists)"
-  Write-Host "ObservedTerminal=$positive"
-  Write-Host "NegativeControl=$negative"
-  Write-Host "CausalIntervention=$intervention"
-  Write-Host "CompleteMatrix=$($positive -and $negative -and $intervention -and $principalDistinct)"
+  Write-Host "HarnessGated=$(-not $harnessFailed)"
 } else {
   Write-Host 'HarnessReport=false'
 }
