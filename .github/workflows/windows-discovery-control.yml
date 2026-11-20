@@ -29,9 +29,17 @@ jobs:
             New-LocalUser -Name $actorName -Password $secure -Description 'Ephemeral visibility account' | Out-Null
             $listener.Start()
             $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
-            $ownerProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList "/d /c echo $sentinel >NUL & ping -n 25 127.0.0.1 >NUL" -PassThru
+            $ownerProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList "/d /c echo $sentinel >NUL & ping -n 120 127.0.0.1 >NUL" -PassThru
             @'
           param([string]$Sentinel, [string]$Result)
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          $ipGlobalWorked = $false
+          $ipGlobalPorts = @()
+          try {
+            $ipGlobalPorts = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | Where-Object { $_.Address -eq [Net.IPAddress]::Loopback } | ForEach-Object Port)
+            $ipGlobalWorked = $true
+          } catch {}
+          $ipGlobalMs = $watch.ElapsedMilliseconds
           $lineVisible = $false
           try {
             $processes = Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" -ErrorAction Stop
@@ -43,7 +51,7 @@ jobs:
             $ports = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -ErrorAction Stop | ForEach-Object LocalPort)
             $enumWorked = $true
           } catch {}
-          @{ actor = [Security.Principal.WindowsIdentity]::GetCurrent().Name; lineVisible = $lineVisible; enumWorked = $enumWorked; ports = $ports } | ConvertTo-Json -Compress | Set-Content -LiteralPath $Result
+          @{ actor = [Security.Principal.WindowsIdentity]::GetCurrent().Name; lineVisible = $lineVisible; enumWorked = $enumWorked; ports = $ports; ipGlobalWorked = $ipGlobalWorked; ipGlobalPorts = $ipGlobalPorts; ipGlobalMs = $ipGlobalMs } | ConvertTo-Json -Compress | Set-Content -LiteralPath $Result
           '@ | Set-Content -LiteralPath $script -Encoding utf8
             $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$script`" -Sentinel $sentinel -Result `"$result`""
             $actorProcess = Start-Process -FilePath 'powershell.exe' -Credential $credential -ArgumentList $arguments -Wait -PassThru
@@ -55,6 +63,9 @@ jobs:
             Write-Host "CrossUserCommandLineVisible=$($data.lineVisible)"
             Write-Host "CrossUserSocketEnumerationWorked=$($data.enumWorked)"
             Write-Host "OwnerLoopbackPortVisible=$($data.ports -contains $port)"
+            Write-Host "IPGlobalEnumerationWorked=$($data.ipGlobalWorked)"
+            Write-Host "IPGlobalOwnerPortVisible=$($data.ipGlobalPorts -contains $port)"
+            Write-Host "IPGlobalEnumerationMs=$($data.ipGlobalMs)"
           } finally {
             $listener.Stop()
             if ($ownerProcess -and -not $ownerProcess.HasExited) { Stop-Process -Id $ownerProcess.Id -Force }
