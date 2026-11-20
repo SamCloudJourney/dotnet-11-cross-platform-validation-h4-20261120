@@ -1,0 +1,19 @@
+name: ESC12 WPF runner startup control
+on:
+  push:
+    branches:
+      - lab/esc12-wpf-paste-json-frame-20261120
+    paths:
+      - .github/workflows/esc12-wpf-startup.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  startup:
+    runs-on: windows-2025
+    steps:
+      - name: Confirm runner startup
+        shell: pwsh
+        run: |
+          Write-Output "ESC12_STARTUP_OK"
+          Write-Output "RunnerOS=$env:RUNNER_OS"
