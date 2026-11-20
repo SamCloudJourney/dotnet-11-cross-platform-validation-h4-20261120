@@ -1,0 +1,52 @@
+name: Windows cross user clipboard control
+
+on:
+  push:
+    branches:
+      - lab/h4-wpf-jsonframe-20261120
+
+permissions:
+  contents: read
+
+jobs:
+  clipboard-control:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check harmless cross user clipboard transfer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nonce = [Guid]::NewGuid().ToString('N')
+          $actorName = 'h4clip' + $nonce.Substring(0, 8)
+          $secure = ConvertTo-SecureString ([Guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
+          $credential = [pscredential]::new("$env:COMPUTERNAME\$actorName", $secure)
+          $script = Join-Path $env:PUBLIC ('h4-clipboard-' + $nonce + '.ps1')
+          $result = Join-Path $env:PUBLIC ('h4-clipboard-' + $nonce + '.txt')
+          $marker = Join-Path $env:USERPROFILE ('h4-owner-' + $nonce + '.txt')
+          try {
+            New-LocalUser -Name $actorName -Password $secure -Description 'Ephemeral clipboard control account' | Out-Null
+            @'
+          param([string]$Nonce, [string]$Result, [string]$Marker)
+          $ErrorActionPreference = 'Stop'
+          $direct = 'denied'
+          try { Set-Content -LiteralPath $Marker -Value 'actor' -ErrorAction Stop; $direct = 'allowed' } catch {}
+          Set-Clipboard -Value ('H4-SAFE-' + $Nonce)
+          Set-Content -LiteralPath $Result -Value "actor=$([Security.Principal.WindowsIdentity]::GetCurrent().Name);direct=$direct;set=true"
+          '@ | Set-Content -LiteralPath $script -Encoding utf8
+            $arguments = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$script`" -Nonce $nonce -Result `"$result`" -Marker `"$marker`""
+            $process = Start-Process -FilePath 'powershell.exe' -Credential $credential -ArgumentList $arguments -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Actor setup failed with exit $($process.ExitCode)" }
+            $actorResult = (Get-Content -LiteralPath $result -Raw).Trim()
+            $received = (Get-Clipboard -Raw).Trim()
+            if ($actorResult -notmatch 'direct=denied;set=true') { throw "Actor control failed: $actorResult" }
+            if (Test-Path -LiteralPath $marker) { throw 'Actor wrote owner-only file' }
+            if ($received -ne ('H4-SAFE-' + $nonce)) { throw 'Clipboard did not cross to owner session' }
+            Write-Host "RunnerImage=$env:ImageOS $env:ImageVersion"
+            Write-Host "Owner=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+            Write-Host $actorResult
+            Write-Host 'CrossUserClipboard=true;OwnerOnlyMarker=true'
+          } finally {
+            Remove-Item -LiteralPath $script, $result, $marker -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name $actorName -ErrorAction SilentlyContinue
+          }
