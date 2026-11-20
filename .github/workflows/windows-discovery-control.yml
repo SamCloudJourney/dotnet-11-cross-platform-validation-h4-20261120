@@ -1,0 +1,65 @@
+name: Windows cross-user discovery control
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discovery:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check only generic Windows process and socket visibility
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nonce = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+          $actorName = "h4disc$nonce"
+          $password = [Guid]::NewGuid().ToString('N') + 'aA1!'
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          $credential = [pscredential]::new("$env:COMPUTERNAME\$actorName", $secure)
+          $sentinel = "H4_SAFE_$nonce"
+          $script = Join-Path $env:PUBLIC "h4-discovery-$nonce.ps1"
+          $result = Join-Path $env:PUBLIC "h4-discovery-$nonce.json"
+          $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+          $ownerProcess = $null
+          try {
+            New-LocalUser -Name $actorName -Password $secure -Description 'Ephemeral visibility account' | Out-Null
+            $listener.Start()
+            $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+            $ownerProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList "/d /c echo $sentinel >NUL & ping -n 25 127.0.0.1 >NUL" -PassThru
+            @'
+          param([string]$Sentinel, [string]$Result)
+          $lineVisible = $false
+          try {
+            $processes = Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" -ErrorAction Stop
+            $lineVisible = [bool]($processes | Where-Object { $_.CommandLine -like "*$Sentinel*" })
+          } catch {}
+          $ports = @()
+          $enumWorked = $false
+          try {
+            $ports = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -ErrorAction Stop | ForEach-Object LocalPort)
+            $enumWorked = $true
+          } catch {}
+          @{ actor = [Security.Principal.WindowsIdentity]::GetCurrent().Name; lineVisible = $lineVisible; enumWorked = $enumWorked; ports = $ports } | ConvertTo-Json -Compress | Set-Content -LiteralPath $Result
+          '@ | Set-Content -LiteralPath $script -Encoding utf8
+            $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$script`" -Sentinel $sentinel -Result `"$result`""
+            $actorProcess = Start-Process -FilePath 'powershell.exe' -Credential $credential -ArgumentList $arguments -Wait -PassThru
+            if ($actorProcess.ExitCode -ne 0) { throw "Actor exited $($actorProcess.ExitCode)" }
+            $data = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
+            if ($ownerProcess.HasExited) { throw 'Owner process ended before visibility check' }
+            Write-Host "Owner=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+            Write-Host "Actor=$($data.actor)"
+            Write-Host "CrossUserCommandLineVisible=$($data.lineVisible)"
+            Write-Host "CrossUserSocketEnumerationWorked=$($data.enumWorked)"
+            Write-Host "OwnerLoopbackPortVisible=$($data.ports -contains $port)"
+          } finally {
+            $listener.Stop()
+            if ($ownerProcess -and -not $ownerProcess.HasExited) { Stop-Process -Id $ownerProcess.Id -Force }
+            Remove-Item -LiteralPath $script, $result -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name $actorName -ErrorAction SilentlyContinue
+          }
