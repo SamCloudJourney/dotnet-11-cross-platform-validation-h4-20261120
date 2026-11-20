@@ -1,0 +1,38 @@
+name: Windows encrypted validation
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Check out reviewed encrypted input
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Install pinned Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Execute private controlled validation and encrypt evidence
+        shell: pwsh
+        env:
+          H4_VALIDATION_KEY: ${{ secrets.H4_VALIDATION_KEY }}
+        run: ./scripts/run-encrypted.ps1
+      - name: Retain encrypted evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: encrypted-validation-evidence
+          path: encrypted-run-output.bin
+          if-no-files-found: warn
+          retention-days: 1
