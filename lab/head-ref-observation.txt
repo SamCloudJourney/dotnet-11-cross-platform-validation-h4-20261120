@@ -1,2 +1,3 @@
 Owned GitHub metadata experiment, state A.
 This file contains no vulnerability payload or credential.
+State B: branch advanced after pull request merge.
