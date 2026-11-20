@@ -1,9 +1,7 @@
 name: Windows cross user clipboard control
 
 on:
-  push:
-    branches:
-      - lab/h4-wpf-jsonframe-20261120
+  workflow_dispatch:
 
 permissions:
   contents: read
