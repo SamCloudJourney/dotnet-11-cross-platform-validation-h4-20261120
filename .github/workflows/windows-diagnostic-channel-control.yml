@@ -1,0 +1,88 @@
+name: Windows diagnostic channel access control
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic-access:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 11.0.100
+      - name: Check separate-user duplex access without sending a command
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdk = (& dotnet --version).Trim()
+          if ($sdk -ne '11.0.100') { throw "Unexpected SDK: $sdk" }
+          $runtime = Join-Path $env:DOTNET_ROOT 'shared\Microsoft.NETCore.App\11.0.0\coreclr.dll'
+          if (-not (Test-Path -LiteralPath $runtime)) { throw 'Expected runtime binary absent' }
+          Write-Host "SDK=$sdk"
+          Write-Host "CoreClrSha256=$((Get-FileHash $runtime -Algorithm SHA256).Hash)"
+          Write-Host "RunnerImage=$env:ImageOS $env:ImageVersion"
+
+          $nonce = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+          $actorName = "h4diag$nonce"
+          $password = [Guid]::NewGuid().ToString('N') + 'aA1!'
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          $credential = [pscredential]::new("$env:COMPUTERNAME\$actorName", $secure)
+          $lab = Join-Path $env:RUNNER_TEMP "h4-diag-$nonce"
+          $script = Join-Path $env:PUBLIC "h4-diag-actor-$nonce.ps1"
+          $result = Join-Path $env:PUBLIC "h4-diag-result-$nonce.txt"
+          $ownerProcess = $null
+          try {
+            New-LocalUser -Name $actorName -Password $secure -Description 'Ephemeral access-control account' | Out-Null
+            & dotnet new console --framework net11.0 --no-restore --output $lab | Out-Null
+            @'
+          Console.WriteLine("H4_READY");
+          Console.Out.Flush();
+          Thread.Sleep(TimeSpan.FromSeconds(45));
+          '@ | Set-Content -LiteralPath (Join-Path $lab 'Program.cs') -Encoding utf8
+            & dotnet build $lab -c Release --nologo --verbosity quiet | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Owner app build failed' }
+            $dll = (Get-ChildItem (Join-Path $lab 'bin\Release\net11.0') -Filter '*.dll' | Select-Object -First 1).FullName
+            $ownerProcess = Start-Process -FilePath 'dotnet.exe' -ArgumentList "`"$dll`"" -PassThru -RedirectStandardOutput (Join-Path $lab 'owner.out') -RedirectStandardError (Join-Path $lab 'owner.err')
+            Start-Sleep -Seconds 2
+            if ($ownerProcess.HasExited) { throw 'Owner app exited before access check' }
+            $pipeName = "dotnet-diagnostic-$($ownerProcess.Id)"
+            @'
+          param([string]$PipeName, [string]$Result)
+          $status = 'unknown'
+          $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
+          try {
+            try { $pipe.Connect(1500); $status = 'connected' }
+            catch [UnauthorizedAccessException] { $status = 'denied' }
+            catch [TimeoutException] { $status = 'timeout' }
+            catch [IO.IOException] { $status = 'io-error' }
+          } finally { $pipe.Dispose() }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          Set-Content -LiteralPath $Result -Value "actor=$identity; duplex=$status"
+          '@ | Set-Content -LiteralPath $script -Encoding utf8
+            $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$script`" -PipeName `"$pipeName`" -Result `"$result`""
+            $actorProcess = Start-Process -FilePath 'powershell.exe' -Credential $credential -ArgumentList $arguments -Wait -PassThru
+            if ($actorProcess.ExitCode -ne 0) { throw "Actor exited $($actorProcess.ExitCode)" }
+            $actorResult = (Get-Content -LiteralPath $result -Raw).Trim()
+            Write-Host "Owner=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+            Write-Host $actorResult
+            $ownerPipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
+            try {
+              $ownerPipe.Connect(1500)
+              Write-Host 'OwnerDuplex=true'
+            } finally {
+              $ownerPipe.Dispose()
+            }
+            if ($actorResult -notmatch 'duplex=denied') { throw "Default diagnostics duplex guard not established: $actorResult" }
+          } finally {
+            if ($ownerProcess -and -not $ownerProcess.HasExited) { Stop-Process -Id $ownerProcess.Id -Force }
+            Remove-Item -LiteralPath $script, $result -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $lab -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name $actorName -ErrorAction SilentlyContinue
+          }
